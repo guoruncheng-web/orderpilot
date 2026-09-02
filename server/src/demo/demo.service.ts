@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -7,6 +7,9 @@ import { PrismaService } from '../prisma/prisma.service';
 export class DemoService {
   constructor(private readonly prisma: PrismaService, private readonly auth: AuthService) {}
   async create(role:'admin'|'member'|'viewer'='admin') {
+    await this.cleanupExpired();
+    const live=await this.prisma.organization.count({where:{isDemo:true}});
+    if(live>=120) throw new HttpException('The public demo is at capacity. Please try again later.',HttpStatus.TOO_MANY_REQUESTS);
     const suffix = crypto.randomUUID().slice(0, 8);
     const passwordHash = await bcrypt.hash(crypto.randomUUID(), 10);
     const user = await this.prisma.user.create({
