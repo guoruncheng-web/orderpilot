@@ -1,14 +1,21 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { AuthService } from '../auth/auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class DemoService {
+  private readonly logger = new Logger(DemoService.name);
+
   constructor(private readonly prisma: PrismaService, private readonly auth: AuthService) {}
   async create(role:'admin'|'member'|'viewer'='admin') {
-    await this.cleanupExpired();
-    const live=await this.prisma.organization.count({where:{isDemo:true}});
+    try {
+      await this.cleanupExpired();
+    } catch (error) {
+      this.logger.error('Expired demo cleanup failed; provisioning will continue', error as Error);
+    }
+    const cutoff=new Date(Date.now()-24*60*60*1000);
+    const live=await this.prisma.organization.count({where:{isDemo:true,createdAt:{gte:cutoff}}});
     if(live>=120) throw new HttpException('The public demo is at capacity. Please try again later.',HttpStatus.TOO_MANY_REQUESTS);
     const suffix = crypto.randomUUID().slice(0, 8);
     const passwordHash = await bcrypt.hash(crypto.randomUUID(), 10);
@@ -34,8 +41,37 @@ export class DemoService {
 
   async cleanupExpired() {
     const cutoff=new Date(Date.now()-24*60*60*1000);
-    const result=await this.prisma.organization.deleteMany({where:{isDemo:true,createdAt:{lt:cutoff}}});
-    return {deletedOrganizations:result.count,cutoff:cutoff.toISOString()};
+    const expired=await this.prisma.organization.findMany({where:{isDemo:true,createdAt:{lt:cutoff}},select:{id:true},take:20});
+    let deletedOrganizations=0;
+
+    for(const organization of expired) {
+      try {
+        await this.prisma.$transaction(async(tx)=>{
+          // The first production schema predates the cascade rules now shown
+          // in schema.prisma. Delete leaves before their parents so those old
+          // foreign keys cannot make cleanup — and therefore provisioning —
+          // fail for every visitor.
+          await tx.payment.deleteMany({where:{organizationId:organization.id}});
+          await tx.receivable.deleteMany({where:{organizationId:organization.id}});
+          await tx.inventoryMovement.deleteMany({where:{product:{organizationId:organization.id}}});
+          await tx.purchaseOrder.deleteMany({where:{organizationId:organization.id}});
+          await tx.approval.deleteMany({where:{organizationId:organization.id}});
+          await tx.salesOrderItem.deleteMany({where:{order:{organizationId:organization.id}}});
+          await tx.salesOrder.deleteMany({where:{organizationId:organization.id}});
+          await tx.customer.deleteMany({where:{organizationId:organization.id}});
+          await tx.supplier.deleteMany({where:{organizationId:organization.id}});
+          await tx.product.deleteMany({where:{organizationId:organization.id}});
+          await tx.auditEvent.deleteMany({where:{organizationId:organization.id}});
+          await tx.user.deleteMany({where:{organizationId:organization.id}});
+          await tx.organization.delete({where:{id:organization.id}});
+        });
+        deletedOrganizations+=1;
+      } catch(error) {
+        this.logger.error(`Could not delete expired demo organization ${organization.id}`,error as Error);
+      }
+    }
+
+    return {deletedOrganizations,cutoff:cutoff.toISOString()};
   }
 
 }
