@@ -1,0 +1,6 @@
+.vercel
+.env*
+
+# The example files document what has to be set; the real values never leave
+# the hosting provider's dashboard.
+!.env.example

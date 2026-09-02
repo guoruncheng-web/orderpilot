@@ -1,0 +1,9 @@
+.vercel
+.env*
+
+# Copied out of swagger-ui-dist during the build.
+public/docs-assets/
+
+# The example files document what has to be set; the real values never leave
+# the hosting provider's dashboard.
+!.env.example
